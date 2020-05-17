@@ -29,6 +29,7 @@
 #include "ns3/socket-factory.h"
 #include "ns3/packet.h"
 #include "ns3/uinteger.h"
+#include "seq-ts-header.h"
 
 #include "udp-reliable-echo-server.h"
 
@@ -160,26 +161,33 @@ UdpReliableEchoServer::HandleRead (Ptr<Socket> socket)
   Ptr<Packet> packet;
   Address from;
   Address localAddress;
+  SeqTsHeader seqTs;
+  uint32_t currentSeqNumber;
   while ((packet = socket->RecvFrom (from)))
     {
       socket->GetSockName (localAddress);
+      packet->RemoveHeader (seqTs);
+      currentSeqNumber = seqTs.GetSeq ();
       m_rxTrace (packet);
       m_rxTraceWithAddresses (packet, from, localAddress);
       if (InetSocketAddress::IsMatchingType (from))
         {
           NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s server received " << packet->GetSize () << " bytes from " <<
                        InetSocketAddress::ConvertFrom (from).GetIpv4 () << " port " <<
-                       InetSocketAddress::ConvertFrom (from).GetPort ());
+                       InetSocketAddress::ConvertFrom (from).GetPort () << " seq " << currentSeqNumber);
         }
       else if (Inet6SocketAddress::IsMatchingType (from))
         {
           NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s server received " << packet->GetSize () << " bytes from " <<
                        Inet6SocketAddress::ConvertFrom (from).GetIpv6 () << " port " <<
-                       Inet6SocketAddress::ConvertFrom (from).GetPort ());
+                       Inet6SocketAddress::ConvertFrom (from).GetPort () << " seq " << currentSeqNumber);
         }
 
       packet->RemoveAllPacketTags ();
       packet->RemoveAllByteTags ();
+
+      seqTs.SetSeq (currentSeqNumber);
+      packet->AddHeader (seqTs);
 
       NS_LOG_LOGIC ("Echoing packet");
       socket->SendTo (packet, 0, from);
@@ -188,13 +196,13 @@ UdpReliableEchoServer::HandleRead (Ptr<Socket> socket)
         {
           NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s server sent " << packet->GetSize () << " bytes to " <<
                        InetSocketAddress::ConvertFrom (from).GetIpv4 () << " port " <<
-                       InetSocketAddress::ConvertFrom (from).GetPort ());
+                       InetSocketAddress::ConvertFrom (from).GetPort () << " seq " << currentSeqNumber);
         }
       else if (Inet6SocketAddress::IsMatchingType (from))
         {
           NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s server sent " << packet->GetSize () << " bytes to " <<
                        Inet6SocketAddress::ConvertFrom (from).GetIpv6 () << " port " <<
-                       Inet6SocketAddress::ConvertFrom (from).GetPort ());
+                       Inet6SocketAddress::ConvertFrom (from).GetPort () << " seq " << currentSeqNumber);
         }
     }
 }

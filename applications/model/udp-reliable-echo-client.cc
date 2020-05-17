@@ -27,6 +27,8 @@
 #include "ns3/packet.h"
 #include "ns3/uinteger.h"
 #include "ns3/trace-source-accessor.h"
+#include "seq-ts-header.h"
+
 #include "udp-reliable-echo-client.h"
 
 namespace ns3 {
@@ -91,6 +93,13 @@ UdpReliableEchoClient::UdpReliableEchoClient ()
   m_sendEvent = EventId ();
   m_data = 0;
   m_dataSize = 0;
+
+  m_nextSeqNum = 0;
+  m_waitingSeqNum = 0;
+  m_sendQueueSize = 32786;
+  m_sendQueue = new uint32_t[m_sendQueueSize]();
+  m_sendQueueFront = 0;
+  m_sendQueueBack = 0;
 }
 
 UdpReliableEchoClient::~UdpReliableEchoClient()
@@ -335,6 +344,10 @@ UdpReliableEchoClient::Send (void)
     }
   Address localAddress;
   m_socket->GetSockName (localAddress);
+  uint32_t seqNum = GetSeqNum ();
+  SeqTsHeader seqTs;
+  seqTs.SetSeq (seqNum);
+  p->AddHeader (seqTs);
   // call to the trace sinks before the packet is actually sent,
   // so that tags added to the packet can be sent as well
   m_txTrace (p);
@@ -352,22 +365,22 @@ UdpReliableEchoClient::Send (void)
   if (Ipv4Address::IsMatchingType (m_peerAddress))
     {
       NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s client sent " << m_size << " bytes to " <<
-                   Ipv4Address::ConvertFrom (m_peerAddress) << " port " << m_peerPort);
+                   Ipv4Address::ConvertFrom (m_peerAddress) << " port " << m_peerPort << " seq " << seqNum);
     }
   else if (Ipv6Address::IsMatchingType (m_peerAddress))
     {
       NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s client sent " << m_size << " bytes to " <<
-                   Ipv6Address::ConvertFrom (m_peerAddress) << " port " << m_peerPort);
+                   Ipv6Address::ConvertFrom (m_peerAddress) << " port " << m_peerPort << " seq " << seqNum);
     }
   else if (InetSocketAddress::IsMatchingType (m_peerAddress))
     {
       NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s client sent " << m_size << " bytes to " <<
-                   InetSocketAddress::ConvertFrom (m_peerAddress).GetIpv4 () << " port " << InetSocketAddress::ConvertFrom (m_peerAddress).GetPort ());
+                   InetSocketAddress::ConvertFrom (m_peerAddress).GetIpv4 () << " port " << InetSocketAddress::ConvertFrom (m_peerAddress).GetPort () << " seq " << seqNum);
     }
   else if (Inet6SocketAddress::IsMatchingType (m_peerAddress))
     {
       NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s client sent " << m_size << " bytes to " <<
-                   Inet6SocketAddress::ConvertFrom (m_peerAddress).GetIpv6 () << " port " << Inet6SocketAddress::ConvertFrom (m_peerAddress).GetPort ());
+                   Inet6SocketAddress::ConvertFrom (m_peerAddress).GetIpv6 () << " port " << Inet6SocketAddress::ConvertFrom (m_peerAddress).GetPort () << " seq " << seqNum);
     }
 
   if (m_sent < m_count)
@@ -383,23 +396,83 @@ UdpReliableEchoClient::HandleRead (Ptr<Socket> socket)
   Ptr<Packet> packet;
   Address from;
   Address localAddress;
+  SeqTsHeader seqTs;
+  uint32_t seqNum;
   while ((packet = socket->RecvFrom (from)))
     {
+      packet->RemoveHeader (seqTs);
+      seqNum = seqTs.GetSeq ();
       if (InetSocketAddress::IsMatchingType (from))
         {
           NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s client received " << packet->GetSize () << " bytes from " <<
                        InetSocketAddress::ConvertFrom (from).GetIpv4 () << " port " <<
-                       InetSocketAddress::ConvertFrom (from).GetPort ());
+                       InetSocketAddress::ConvertFrom (from).GetPort () << " seq " << seqNum);
         }
       else if (Inet6SocketAddress::IsMatchingType (from))
         {
           NS_LOG_INFO ("At time " << Simulator::Now ().GetSeconds () << "s client received " << packet->GetSize () << " bytes from " <<
                        Inet6SocketAddress::ConvertFrom (from).GetIpv6 () << " port " <<
-                       Inet6SocketAddress::ConvertFrom (from).GetPort ());
+                       Inet6SocketAddress::ConvertFrom (from).GetPort () << " seq " << seqNum);
         }
+      AddAckSeqNum (seqNum);
       socket->GetSockName (localAddress);
       m_rxTrace (packet);
       m_rxTraceWithAddresses (packet, from, localAddress);
+    }
+}
+
+uint32_t
+UdpReliableEchoClient::GetSeqNum (void)
+{
+  uint32_t seqNum;
+  if (m_sendQueueFront != m_sendQueueBack)
+    {
+      seqNum = m_sendQueue[m_sendQueueFront++];
+      if (m_sendQueueFront == m_sendQueueSize)
+        {
+          m_sendQueueFront = 0;
+        }
+      NS_LOG_INFO(seqNum << " Retransmission");
+    }
+  else
+    {
+      seqNum = m_nextSeqNum++;
+    }
+
+  return seqNum;
+}
+
+void
+UdpReliableEchoClient::AddAckSeqNum (uint32_t seqNum)
+{
+  if (seqNum < m_waitingSeqNum)
+    {
+      NS_LOG_INFO("Receive Retrans Packet: " << seqNum);
+    }
+  else if (seqNum == m_waitingSeqNum)
+    {
+      ++m_waitingSeqNum;
+    }
+  else
+    {
+      NS_LOG_INFO("Packet Loss: " << m_waitingSeqNum);
+      for (uint32_t i = m_waitingSeqNum; i < seqNum; ++i)
+        {
+          if ((m_sendQueueBack + 1) % m_sendQueueSize == m_sendQueueFront)
+            {
+              NS_LOG_INFO("Queue over flow");
+              break;
+            }
+          else
+            {
+              m_sendQueue[m_sendQueueBack++] = i;
+              if (m_sendQueueBack == m_sendQueueSize)
+                {
+                  m_sendQueueBack = 0;
+                }
+            }
+        }
+      m_waitingSeqNum = seqNum + 1;
     }
 }
 

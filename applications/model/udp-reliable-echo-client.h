@@ -157,9 +157,20 @@ private:
    */
   void HandleRead (Ptr<Socket> socket);
 
+  uint32_t GetSeqNum (void);
+
+  void AddAckSeqNum (uint32_t seqNum);
+
   uint32_t m_count; //!< Maximum number of packets the application will send
   Time m_interval; //!< Packet inter-send time
   uint32_t m_size; //!< Size of the sent packet
+
+  uint32_t m_nextSeqNum;
+  uint32_t m_waitingSeqNum;
+  uint32_t *m_sendQueue;
+  uint32_t m_sendQueueSize;
+  uint32_t m_sendQueueFront;
+  uint32_t m_sendQueueBack;
 
   uint32_t m_dataSize; //!< packet payload size (must be equal to m_size)
   uint8_t *m_data; //!< packet payload data
